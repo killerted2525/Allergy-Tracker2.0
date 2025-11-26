@@ -1,6 +1,7 @@
 import express, { type Express, type RequestHandler } from "express";
 import session from "express-session";
 import connectPg from "connect-pg-simple";
+import MemoryStore from "memorystore";
 import bcrypt from "bcrypt";
 import { storage } from "../storage";
 import { registerSchema, loginSchema, type RegisterInput, type LoginInput } from "@shared/schema";
@@ -15,13 +16,30 @@ export function setupAuth(app: Express) {
   }
   
   const sessionTtl = 7 * 24 * 60 * 60 * 1000; // 1 week
-  const pgStore = connectPg(session);
-  const sessionStore = new pgStore({
-    conString: process.env.DATABASE_URL,
-    createTableIfMissing: false,
-    ttl: sessionTtl,
-    tableName: "sessions",
-  });
+  
+  // Create session store - use PostgreSQL if DATABASE_URL is valid, otherwise use memory store
+  let sessionStore: any;
+  
+  if (process.env.DATABASE_URL) {
+    try {
+      const pgStore = connectPg(session);
+      sessionStore = new pgStore({
+        conString: process.env.DATABASE_URL,
+        createTableIfMissing: true,
+        ttl: sessionTtl / 1000,
+        tableName: "sessions",
+      });
+      console.log("Using PostgreSQL session store");
+    } catch (error) {
+      console.error("Failed to create PostgreSQL session store, using memory store:", error);
+      const MemStore = MemoryStore(session);
+      sessionStore = new MemStore({ checkPeriod: sessionTtl });
+    }
+  } else {
+    console.log("No DATABASE_URL, using memory session store");
+    const MemStore = MemoryStore(session);
+    sessionStore = new MemStore({ checkPeriod: sessionTtl });
+  }
   
   app.use(session({
     secret: process.env.SESSION_SECRET || 'dev-secret-only',
@@ -31,6 +49,7 @@ export function setupAuth(app: Express) {
     cookie: {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
+      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
       maxAge: sessionTtl,
     },
   }));
